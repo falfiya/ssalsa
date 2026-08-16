@@ -1,7 +1,14 @@
 [project]
 name = "ssalsa"
 version = "0.0.1"
-description = "Incrementalized computation stolen from salsa-rs"
+description = "Incrementalized computation for Python"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ssalsa"]
