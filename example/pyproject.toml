@@ -1,0 +1,8 @@
+[project]
+name = "ssalsa-example"
+version = "0.0.0"
+requires-python = ">=3.14"
+dependencies = ["ssalsa"]
+
+[tool.uv.sources]
+ssalsa = { path = "../" }
