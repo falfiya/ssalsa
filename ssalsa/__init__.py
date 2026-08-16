@@ -17,26 +17,56 @@ class TotalOrder(t.Protocol):
    def __le__(self, other: t.Self, /) -> bool: ...
 
 
+class Hashable(t.Protocol):
+   def __hash__(self) -> int: ...
+
+type Extra = TotalOrder | None
+
+class Queryable[*Ts, V: Eq, Ex: Extra](abc.ABC):
+   _rt: Runtime
+
+   @abc.abstractmethod
+   def query(self, args: tuple[*Ts]) -> Memo[V, Ex]: ...
+
+   def __call__(self, *args: *Ts) -> V:
+      m = self.query(args)
+      self._rt._ctx_depends_on(
+         Dependency(queryable=self, args=args),
+         m,
+      )
+      return m.value
+
+@dataclass(frozen=True)
+class Dependency[*Ts, V, Ex: Extra]:
+   queryable: Queryable[*Ts, V, Ex]
+   args: tuple[*Ts]
+   def __eq__(self, other: object) -> bool:
+      if not isinstance(other, Dependency):
+         raise NotImplementedError
+      return self.queryable is other.queryable and self.args == other.args
+
 class Dependencies:
    ids: set[int]
-   cells: list[Cell]
+   deps: list[Dependency]
+   none: Dependencies
 
    def __init__(self):
       self.ids = set()
-      self.cells = []
+      self.deps = []
 
    def copy(self) -> Dependencies:
       new = Dependencies()
       new.ids = self.ids.copy()
-      new.cells = self.cells.copy()
+      new.deps = self.deps.copy()
       return new
 
-   def add(self, dep: Cell):
+   def add(self, dep: Dependency):
+      # raise NotImplementedError
       if id(dep) in self.ids:
          return
       else:
          self.ids.add(id(dep))
-         self.cells.append(dep)
+         self.deps.append(dep)
 
    def __add__(self, other: object):
       if not isinstance(other, Dependencies):
@@ -52,151 +82,114 @@ class Dependencies:
       return new
 
    def __iter__(self):
-      return iter(self.cells)
+      return iter(self.deps)
 
    def __len__(self):
-      return len(self.cells)
+      return len(self.deps)
 
    def __repr__(self):
-      return repr(self.cells)
+      return repr(self.deps)
 
+   def __contains__(self, dep):
+      return id(dep) in self.ids
 
-@dataclass
-class Memo[V: Eq, Ex: TotalOrder | None]:
-   value: V
+Dependencies.none = Dependencies()
+
+@dataclass(frozen=True)
+class Memo[V: Eq, Ex: Extra]:
    changed_at: Revision
-   # verified_at: Revision             this would always be the current revision!
+   value: V
    ex: Ex | None
-   dependencies: Dependencies
+   direct_dependencies: Dependencies
+
+   def all_dependencies(self) -> Dependencies:
+      raise NotImplementedError
 
 
-class Cell[*Ts, V: Eq, Ex: TotalOrder | None](abc.ABC):
-   is_input: bool
-   _rt: Runtime
-   """
-   MUST ASSIGN!
-   """
-   _present: bool = False
-   """
-   `present = False` tells everyone to recompute me
-   """
-   _changed_at: Revision
+class Input[V: Eq, Ex: Extra](Queryable[V, Ex]):
+   type Setter = t.Callable[[V, Ex], None]
+   __present = False
 
-   @abc.abstractmethod
-   def get_memo(self, *args: *Ts) -> Memo[V, Ex]: ...
-
-   def __call__(self, *args: *Ts) -> V:
-      m = self.get_memo(*args)
-      self._rt._i_was_called(self, m)
-      return m.value
-
-
-class Input[*Ts, V: Eq, Ex: TotalOrder | None](Cell[*Ts, V, Ex]):
-   is_input = True
-
-   def __init__(self, rt: Runtime, producer_fn: t.Callable[[*Ts], tuple[V, Ex]]):
+   def __init__(self, rt: Runtime):
       self._rt = rt
-      self.__producer_fn = producer_fn
 
-   __producer_fn: t.Callable[[*Ts], tuple[V, Ex]]
-   __value: V
-   __ex: Ex | None
+   def set(self, value: V, ex: Ex):
+      self.__present = True
+      self.__changed_at = self._rt.new_revision()
+      self.__value = value
+      self.__ex = ex
 
-   def get_memo(self, *args: *Ts) -> Memo[V, Ex]:
-      if self.__should_fetch():
-         v, ex = self.__producer_fn(*args)
-         self.__value = v
-         self.__ex = ex
-         # NOTE(nicola): Somehow I feel like this will cause an issue later.
-         # I have no proof of it. Should this be self.__rt.new_revision()?
-         # But then it would change revisions mid calc-chain, which is awful.
-         self._changed_at = self._rt.current_revision()
+   def query(self, args: tuple) -> Memo[V, Ex]:
+      assert self.__present, "Input was not initialized!"
       return Memo(
+         changed_at=self.__changed_at,
          value=self.__value,
-         changed_at=self._changed_at,
          ex=self.__ex,
-         dependencies=Dependencies(),
+         direct_dependencies=Dependencies.none,
       )
 
-   def __should_fetch(self):
-      """
-      Only fetches once by default.
-      Yes, I will spell out both branches thankyouverymuch.
-      """
-      if self._present:  # noqa: SIM103
-         # This is even stronger than self.verified_at == self.__rt.current_revision()
-         return False
-      else:
-         return True
 
-   def invalidate(self):
-      new_rev = self._rt.new_revision()
-      self._present = False
-      self._changed_at = new_rev
-      del self.__value
-      self.__ex = None
-
-
-class Calc[*Ts, V: Eq, Ex: TotalOrder | None](Cell[*Ts, V, Ex]):
-   is_input = False
+class Database[*Ts, V: Eq, Ex: Extra](Queryable[*Ts, V, Ex]):
+   @dataclass(frozen=True)
+   class DatabaseMemo(Memo[V, Ex]):
+      verified_at: Revision
 
    def __init__(self, rt: Runtime, calc_fn: t.Callable[[*Ts], V]):
       self._rt = rt
       self.__calc_fn = calc_fn
+      self.__memos = {}
 
    __calc_fn: t.Callable[[*Ts], V]
-   __value: V
-   __verified_at: Revision
-   __ex: Ex | None = None
-   __dependencies: Dependencies
-   __all_dependencies: Dependencies
+   __memos: dict[tuple[*Ts], DatabaseMemo[V, Ex]]
 
-   def get_memo(self, *args: *Ts) -> Memo[V, Ex]:
-      if self.__should_recompute():
-         self._rt._capture_computation()
-         new_value = self.__calc_fn(*args)
-         self.__dependencies, memos = self._rt._release_computation()
-         max_changed_at = 0
-         min_ex = None
-         all_dependencies = self.__dependencies
-         for memo in memos:
-            max_changed_at = max(max_changed_at, memo.changed_at)
-            if min_ex is None or memo.ex < min_ex:
-               min_ex = memo.ex
-            all_dependencies += memo.dependencies
-         self.__ex = min_ex
-         self.__all_dependencies = all_dependencies
-         if self._present and new_value == self.__value:
-            # Backdate: No update to changed_at
-            pass
+   def query(self, args: tuple[*Ts]) -> Memo[V, Ex]:
+      if self.__should_compute(args):
+         old_memo = self.__memos.get(args)
+         new_memo = self.__compute(args)
+         if old_memo is not None and old_memo.value == new_memo.value:
+            self.__memos[args] = self.DatabaseMemo(
+               old_memo.changed_at, # backdating
+               new_memo.value,
+               new_memo.ex,
+               new_memo.direct_dependencies,
+               new_memo.verified_at,
+            )
          else:
-            self.__value = new_value
-            self._changed_at = max_changed_at
-      self.__verified_at = self._rt.current_revision()
-      return Memo(
-         value=self.__value,
-         changed_at=self._changed_at,
-         ex=self.__ex,
-         dependencies=self.__all_dependencies,
-      )
+            self.__memos[args] = new_memo
+      return self.__memos[args]
 
-   def __should_recompute(self) -> bool:
-      if self._present:
-         assert self.__verified_at is not None
-         assert self.__dependencies is not None
-      else:
+   def __should_compute(self, args: tuple[*Ts]) -> bool:
+      m = self.__memos.get(args)
+      if m is None:
          return True
-      if self.__verified_at == self._rt.current_revision():
+      if m.verified_at == self._rt.current_revision():
          return False
-      for d in self.__dependencies:
-         if not d._present:
-            return True
-         if d._changed_at > self.__verified_at:
+      for d in m.direct_dependencies:
+         m2 = d.queryable.query(d.args)
+         if m2.changed_at > m.verified_at:
             return True
       return False
 
+   def __compute(self, args: tuple[*Ts]) -> DatabaseMemo:
+      self._rt._capture_computation()
+      value = self.__calc_fn(*args)
+      direct_dependencies, memos = self._rt._release_computation()
+      max_changed_at = 0
+      min_ex = None
+      for memo in memos:
+         max_changed_at = max(max_changed_at, memo.changed_at)
+         if min_ex is None or memo.ex < min_ex:
+            min_ex = memo.ex
+      return self.DatabaseMemo(
+         max_changed_at,
+         value,
+         min_ex,
+         direct_dependencies,
+         self._rt.current_revision(),
+      )
 
-class Runtime[Ex: TotalOrder | None]:
+
+class Runtime[Ex: Extra]:
    __revision = 0
 
    def __init__(self):
@@ -216,18 +209,23 @@ class Runtime[Ex: TotalOrder | None]:
    def _release_computation(self) -> tuple[Dependencies, list[Memo]]:
       return self.__tracking_dependencies.pop(), self.__tracking_memos.pop()
 
-   def _i_was_called(self, i: Cell, m: Memo):
+   def _ctx_depends_on(self, d: Dependency, m: Memo):
       """
-      Tell the parent cell that I was called
+      Tell the parent query that I was called
       """
-      self.__tracking_dependencies[-1].add(i)
-      self.__tracking_memos[-1].append(m)
+      assert len(self.__tracking_dependencies) == len(self.__tracking_memos), (
+         "SANITY: __tracking_dependencies and __tracking_memos "
+         "must have the same length!"
+      )
+      if len(self.__tracking_dependencies) > 0:
+         self.__tracking_dependencies[-1].add(d)
+         self.__tracking_memos[-1].append(m)
 
-   def input[*Ts, V](self, fn: t.Callable[[*Ts], tuple[V, Ex]]) -> Input[*Ts, V, Ex]:
-      return Input(self, fn)
+   def create_input[V](self):
+      return Input[V, Ex](self)
 
-   def tracked[*Ts, V: Eq](self, fn: t.Callable[[*Ts], V]) -> Calc[*Ts, V, Ex]:
-      return Calc(self, fn)
+   def tracked[*Ts, V: Eq](self, fn: t.Callable[[*Ts], V]) -> Database[*Ts, V, Ex]:
+      return Database(self, fn)
 
    def current_revision(self) -> Revision:
       return self.__revision
