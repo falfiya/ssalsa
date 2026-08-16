@@ -1,0 +1,20 @@
+digraph {
+   a [label="Input A"]
+   b [label="Input B"]
+   subgraph cluster_c {
+      label="Database C"
+      color=blue
+      c1 [label="c(1)"]
+      c2 [label="c(2)"]
+   }
+   a -> c1
+   b -> c2
+   a -> c2
+   subgraph cluster_d {
+      label="Database D"
+      d [label="d(3)"]
+      color=green
+   }
+   c1 -> d
+   c2 -> d
+}
