@@ -1,0 +1,3 @@
+[submodule "typ/para-lipics"]
+	path = typ/para-lipics
+	url = https://github.com/falfiya/para-lipics.git
