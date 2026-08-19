@@ -1,7 +1,6 @@
 import ssalsa
-import random
 
-s = ssalsa.Runtime[None]()
+s = ssalsa.Runtime(max)
 
 a = s.create_input()
 b = s.create_input()
@@ -26,18 +25,18 @@ def e():
 def print_it():
    print(f"The result was {e()}")
 
-a.set(1, None)
-b.set(2, None)
+a.set(1, 1)
+b.set(2, 10)
 print_it()
 # Full Compute
 #     c() = 1 + 2 = 3
 #     d(3) = 3 // 2 = 1
 #     e() = d(c()) = d(3) = 1
 #     The result was 1
-b.set(1, None)
+b.set(1, 3)
 # Partial compute
 #     c() = 1 + 1 = 2
 #     d(2) = 2 // 2 = 1
 #     e() = d(c()) = d(2) = 1
 # Does not print_it!
-print_it()
+print(print_it.query())

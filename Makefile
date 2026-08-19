@@ -1,3 +1,4 @@
+.PHONY: example
 example:
-	uv sync --reinstall
-	uv run main.py
+	cd example; uv sync --reinstall
+	uv run example/main.py
