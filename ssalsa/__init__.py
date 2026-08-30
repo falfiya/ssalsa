@@ -220,6 +220,32 @@ class Database[**Ps, V: Eq, Ex](Queryable[Ps, V, Ex]):
       mm.direct_dependencies = direct_dependencies
 
 
+class Extern[**Ps, V: Eq, Ex](Queryable[Ps, V, Ex]):
+   __rt: Runtime[Ex]
+   __resource_fn: ResourceFn[Ps, V, Ex]
+   __memos: dict[Arguments, Memo]
+
+   def __init__(self, rt: Runtime[Ex], resource_fn: ResourceFn[Ps, V, Ex]):
+      self.__rt = rt
+      self.__resource_fn = resource_fn
+
+   def query(self, *args: Ps.args, **kwargs: Ps.kwargs) -> Memo[V, Ex]:
+      a_args = Arguments(args, kwargs)
+      if a_args not in self.__memos:
+         # Call it for the first time
+         value, ex = self.__resource_fn(*args, **kwargs)
+         self.__memos[a_args] = Memo(
+            changed_at=self.__rt.current_revision(),
+            value=value,
+            ex=ex,
+            direct_dependencies=frozenset(),
+         )
+      return self.__memos[a_args]
+
+   def invalidate(self, *args: Ps.args, **kwargs: Ps.kwargs):
+      a_args = Arguments(args, kwargs)
+      del self.__memos[a_args]
+
 class Runtime[Ex]:
    __revision = 0
    __tracking_dependencies: list[set[Dependency]]
@@ -276,6 +302,9 @@ class Runtime[Ex]:
       """
       self.__revision += 1
       return self.__revision
+
+   def extern[**Ps, V: Eq](self, fn_query: t.Callable[Ps, tuple[V, Ex]]) -> Extern[Ps, V, Ex]:
+      return Extern(self, fn_query)
 
 
 if __name__ == "main":
