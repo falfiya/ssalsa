@@ -204,6 +204,8 @@ class Database[**Ps, V: Eq, Ex](Queryable[Ps, V, Ex]):
       - `value`
       - `ex`
       - `direct_dependencies`
+
+      I also call into the runtime to ask what my dependencies are.
       """
       mm = self.__memos[a_args]
       self._rt._capture_computation()
@@ -220,20 +222,38 @@ class Database[**Ps, V: Eq, Ex](Queryable[Ps, V, Ex]):
       mm.direct_dependencies = direct_dependencies
 
 
-class Extern[**Ps, V: Eq, Ex](Queryable[Ps, V, Ex]):
+class External[**Ps, V: Eq, Ex](Queryable[Ps, V, Ex]):
+   """
+   Useful for data not controlled by ssalsa.
+
+   ```
+   s = ssalsa.Runtime()
+
+   _address_book: dict[str, str] = {}
+
+   @s.extern
+   def address_book(name: str) -> tuple[str, None]:
+      return _address_book[name]
+
+   def populate_address_book():
+      for name in names:
+         _address_book[name] = fetch_address(name)
+         address_book.invalidate(name)
+   ```
+   """
    __rt: Runtime[Ex]
-   __resource_fn: ResourceFn[Ps, V, Ex]
+   __extern_fn: t.Callable[Ps, tuple[V, Ex | None]]
    __memos: dict[Arguments, Memo]
 
-   def __init__(self, rt: Runtime[Ex], resource_fn: ResourceFn[Ps, V, Ex]):
+   def __init__(self, rt: Runtime[Ex], external_fn: t.Callable[Ps, tuple[V, Ex | None]]):
       self.__rt = rt
-      self.__resource_fn = resource_fn
+      self.__extern_fn = external_fn
 
    def query(self, *args: Ps.args, **kwargs: Ps.kwargs) -> Memo[V, Ex]:
       a_args = Arguments(args, kwargs)
       if a_args not in self.__memos:
          # Call it for the first time
-         value, ex = self.__resource_fn(*args, **kwargs)
+         value, ex = self.__extern_fn(*args, **kwargs)
          self.__memos[a_args] = Memo(
             changed_at=self.__rt.current_revision(),
             value=value,
@@ -276,7 +296,10 @@ class Runtime[Ex]:
 
    def _ctx_depends_on(self, d: Dependency, m: Memo):
       """
-      Tell the parent query that I was called
+      Tell the parent query that I was called.
+
+      This is only ever called by `Queryable.__call__`, which itself calls `.query`.
+      Suffice to say that `.query` itself is insufficient to track a dependency.
       """
       assert len(self.__tracking_dependencies) == len(self.__tracking_memos), (
          "SANITY: __tracking_dependencies and __tracking_memos "
@@ -303,8 +326,8 @@ class Runtime[Ex]:
       self.__revision += 1
       return self.__revision
 
-   def extern[**Ps, V: Eq](self, fn_query: t.Callable[Ps, tuple[V, Ex]]) -> Extern[Ps, V, Ex]:
-      return Extern(self, fn_query)
+   def extern[**Ps, V: Eq](self, fn_query: t.Callable[Ps, tuple[V, Ex | None]]) -> External[Ps, V, Ex]:
+      return External(self, fn_query)
 
 
 if __name__ == "main":
